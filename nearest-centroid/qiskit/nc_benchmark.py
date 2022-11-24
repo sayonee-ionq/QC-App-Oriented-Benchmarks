@@ -14,6 +14,11 @@ sys.path[1:1] = [ "../../_common", "../../_common/qiskit" ]
 import execute as ex
 import metrics as metrics
 
+from sklearn import datasets
+from sklearn.decomposition import PCA
+from sklearn.model_selection import train_test_split
+from sklearn.decomposition import PCA
+
 np.random.seed(0)
 
 verbose = False
@@ -267,29 +272,56 @@ def run (min_qubits=3, max_qubits=8, max_circuits=3, num_shots=100,
         
         print(f"************\nExecuting [{num_circuits}] circuits with num_qubits = {num_qubits}")
         
+        if method == 1:
         # generate max_circuits pairs of random vectors to estimate inner product
-        def random_vector(): 
-            v = np.random.uniform(size=(num_qubits,))
-            return v / np.linalg.norm(v)
+            def random_vector(): 
+                v = np.random.uniform(size=(num_qubits,))
+                return v / np.linalg.norm(v)
 
-        vector_pairs = [(random_vector(), random_vector()) for _ in range(num_circuits)]
+            vector_pairs = [(random_vector(), random_vector()) for _ in range(num_circuits)]
 
-        # loop over limited # of secret strings for this
-        for v_pair in vector_pairs:
-            # create the circuit for given qubit size and inner product, store time metric
-            ts = time.time()
-            qc = NearestCentroid(num_qubits, v_pair[0], v_pair[1])
+            # loop over limited # of secret strings for this
+            for v_pair in vector_pairs:
+                # create the circuit for given qubit size and inner product, store time metric
+                ts = time.time()
+                qc = NearestCentroid(num_qubits, v_pair[0], v_pair[1])
+
+                # NOTE: We might need a better candidate for the circuit/group ID than the inner product itself...
+                ip = np.inner(v_pair[0], v_pair[1])
+
+                metrics.store_metric(num_qubits, ip, 'create_time', time.time()-ts)
+
+                # collapse the sub-circuit levels used in this benchmark (for qiskit)
+                qc2 = qc.decompose()
+
+                # submit circuit for execution on target (simulator, cloud simulator, or hardware)
+                ex.submit_circuit(qc2, num_qubits, ip, shots=num_shots)
+                
+        elif method == 2:
+            wine = datasets.load_wine()
+            X = wine.data  # we only take the first two features.
+            y = wine.target
+            X_train, X_test, y_train, y_test = train_test_split(X,y,test_size=0.8, random_state=42)
+
+            pca = PCA(n_components=num_qubits)
+            X_train = pca.fit_transform(X_train)
             
-            # NOTE: We might need a better candidate for the circuit/group ID than the inner product itself...
-            ip = np.inner(v_pair[0], v_pair[1])
+            vector_pairs = [np.random.choice(np.arange(X_train.shape[0]), 2) for _ in range(num_circuits)]
+            
+            for v_pair in vector_pairs:
+                ts = time.time()
+                qc = NearestCentroid(num_qubits, X_train[v_pair[0]], X_train[v_pair[1]])
 
-            metrics.store_metric(num_qubits, ip, 'create_time', time.time()-ts)
+                # NOTE: We might need a better candidate for the circuit/group ID than the inner product itself...
+                ip = np.inner(X_train[v_pair[0]], X_train[v_pair[1]])
 
-            # collapse the sub-circuit levels used in this benchmark (for qiskit)
-            qc2 = qc.decompose()
+                metrics.store_metric(num_qubits, ip, 'create_time', time.time()-ts)
 
-            # submit circuit for execution on target (simulator, cloud simulator, or hardware)
-            ex.submit_circuit(qc2, num_qubits, ip, shots=num_shots)
+                # collapse the sub-circuit levels used in this benchmark (for qiskit)
+                qc2 = qc.decompose()
+
+                # submit circuit for execution on target (simulator, cloud simulator, or hardware)
+                ex.submit_circuit(qc2, num_qubits, ip, shots=num_shots)
         
         # Wait for some active circuits to complete; report metrics when groups complete
         ex.throttle_execution(metrics.finalize_group)
